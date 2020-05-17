@@ -90,11 +90,11 @@ class Upblock(layers.Layer):
     def call(self, inputs,skip):
         inputs = self.upsampling(inputs)
         #inputs = self.conv2d1(inputs)
-        output = layers.concatenate([inputs, skip],axis=-1)
-        output = self.conv2d1(output)
+        output1 = layers.concatenate([inputs, skip],axis=-1)
+        output2 = self.conv2d1(output1)
         #print(tf.shape(output))
-        output = self.conv2d2(output)
-        output = self.conv2d3(output)
+        output3 = self.conv2d2(output2)
+        output = self.conv2d3(output3)
         return output
 class Poolskip(layers.Layer):
     def __init__(self,
@@ -145,20 +145,23 @@ def cus_convolve(img_stack, filts, final_K):
     img_stack = tf.stack(img_stack, axis=-2)
     img_stack = tf.reshape(img_stack, [ish[0], ish[1], ish[2], final_K**2 * initial_W])
     img_net = tf.reduce_sum(img_stack * filts, axis=-1) # removes the final_K**2*initial_W dimension but keeps final_W
+    #batch_size*H*w
     return img_net
 class Convolve_perlayer(layers.Layer):
-    def __init__(self,final_K,
+    def __init__(self,final_K,burst_length,
                  name='convolve_perlayer',
                  **kwargs):
         super(Convolve_perlayer, self).__init__(name=name, **kwargs)
         self.final_K = final_K
+        self.burst_length = burst_length
     def call(self, conv_stack, filts):
         initial_W = conv_stack.get_shape().as_list()[-1]
         img_net = []
         for i in range(initial_W):
-            onepiece = cus_convolve(conv_stack[...,i:i+1], filts[...,i:i+1], self.final_K)
-            img_net.append(tf.expand_dims(onepiece,3))
+            onepiece = cus_convolve(conv_stack[...,i:i+1], filts[...,i:i+1], self.final_K)*initial_W 
+            img_net.append(tf.expand_dims(onepiece,-1))
         img_net = tf.concat(img_net, axis=-1)
+        #batch_size*H*w*burst_length
         return img_net
 # =============================================================================
 # def convolve_per_layer(conv_stack, filts, final_K, final_W):
@@ -216,10 +219,10 @@ class Basis_kpn(tf.keras.Model):
         
         self.layer3_1 = layers.Conv2D(128,2, padding="valid", activation='relu',name="weight3_1")
         self.layer3_2 = layers.Conv2D(128,3, padding="same", activation='relu',name="weight3_2")
-        self.layer3_3 = layers.Conv2D(burst_length*B,3, padding="same", activation='relu',name="weight3_2")
+        self.layer3_3 = layers.Conv2D(burst_length*B,3, padding="same", activation='relu',name="weight3_3")
         
         #self.convolve = Convolve(K,name ="convolve")
-        self.convolve_perlayer = Convolve_perlayer(K,name ="convolve_perlayer")
+        self.convolve_perlayer = Convolve_perlayer(self.K,self.burst_length,name ="convolve_perlayer")
     def call(self, inputs):
         inputs0 = self.layer0(inputs)
         #encoder part
@@ -252,9 +255,9 @@ class Basis_kpn(tf.keras.Model):
         Upbasis5 = self.Basis_up1(Global_average, poolskip5)
         poolskip4 = self.pool_skip2(skip4)
         Upbasis4 = self.Basis_up2(Upbasis5, poolskip4)
-        poolskip3 = self.pool_skip3(skip5)
+        poolskip3 = self.pool_skip3(skip3)
         Upbasis3 = self.Basis_up3(Upbasis4, poolskip3)
-        poolskip2 = self.pool_skip4(skip5)
+        poolskip2 = self.pool_skip4(skip2)
         Upbasis2 = self.Basis_up4(Upbasis3, poolskip2)
         
         Output8_1 = self.layer3_1(Upbasis2)
@@ -342,10 +345,10 @@ class Simplemodel(tf.keras.Model):
 # =============================================================================
 #         self.layer3_2 = layers.Conv2D(128,3, padding="same", activation='relu',name="weight3_2")
 # =============================================================================
-        self.layer3_3 = layers.Conv2D(self.burst_length*self.B,3, padding="same", activation='relu',name="weight3_2")
+        self.layer3_3 = layers.Conv2D(self.burst_length*self.B,3, padding="same", activation='relu',name="weight3_3")
         
         self.convolve = Convolve(self.K,name ="convolve")
-        self.convolve_perlayer = Convolve_perlayer(self.K,name ="convolve_perlayer")
+        self.convolve_perlayer = Convolve_perlayer(self.K,self.burst_length, name ="convolve_perlayer")
     def call(self, inputs):
         inputs0 = self.layer0(inputs)
         #encoder part
@@ -389,10 +392,10 @@ class Simplemodel(tf.keras.Model):
 # =============================================================================
 #         poolskip4 = self.pool_skip2(skip4)
 #         Upbasis4 = self.Basis_up2(Upbasis5, poolskip4)
-#         poolskip3 = self.pool_skip3(skip5)
+#         poolskip3 = self.pool_skip3(skip3)
 #         Upbasis3 = self.Basis_up3(Upbasis4, poolskip3)
 # =============================================================================
-        poolskip2 = self.pool_skip4(skip5)
+        poolskip2 = self.pool_skip4(skip2)
         Upbasis2 = self.Basis_up4(Upbasis5, poolskip2)
         
         Output8_1 = self.layer3_1(Upbasis2)
@@ -418,9 +421,10 @@ class Simplemodel(tf.keras.Model):
         filts = tf.reduce_sum(Basis*Coefficients,axis=-1)
         #print("input.shape",tf.shape(inputs))
         #print("filts.shape",tf.shape(filts))
-        Deblur = tf.expand_dims(self.convolve(inputs, filts),3)
+        Deblur = tf.expand_dims(self.convolve(inputs, filts),-1)
+        #batch_size*H*W*1
         Deblur_perburst = self.convolve_perlayer(inputs, filts)
-        
+        #batch_size*H*W*burst_length
         output = tf.concat([Deblur,Deblur_perburst], axis=-1)
         return output 
 

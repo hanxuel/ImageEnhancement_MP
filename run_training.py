@@ -32,7 +32,7 @@ def parse_args():
     parser.add_argument("--Basis_num", type=int, default=10)
     parser.add_argument("--color", type=bool, default=False)
     parser.add_argument("--batch_size", type=int, default=2)
-    parser.add_argument("--nepochs", type=int, default=200)
+    parser.add_argument("--nepochs", type=int, default=50)
     parser.add_argument("--val_nbatches", type=int, default=15)
     parser.add_argument("--learning_rate", type=float, default=0.0001)
     parser.add_argument("--degamma", type=float, default=2.2)
@@ -111,7 +111,10 @@ def main():
     for epoch in range(epochs):
         print('Start of epoch %d' % (epoch,))
         # Iterate over the batches of the dataset.
-        psnr=[]
+        psnr = []
+        psnr_perlayer=[[0]*1 for i in range(params["BURST_LENGTH"])]
+        psnr_noise0 = []
+        psnr_average = []
         for step, x_batch_train in enumerate(image_ds):
             x_batch_burst, x_batch_truth=x_batch_train
             with tf.GradientTape() as tape:
@@ -120,8 +123,19 @@ def main():
                 # Compute reconstruction loss
                 loss = deblur_layer_loss(x_batch_truth, reconstructed)
                 loss += sum(model.losses)  # Add KLD regularization loss
+                
                 onestep_psnr =psnr_deblur(x_batch_truth, reconstructed)
                 psnr.append(onestep_psnr.numpy())
+                
+                onestep_psnr_perlayer = psnr_each_layer(x_batch_truth, reconstructed)
+                
+                onestep_psnr_noise0 = psnr_burst0(x_batch_truth, x_batch_burst)
+                psnr_noise0.append(onestep_psnr_noise0.numpy())
+                
+                onestep_psnr_average = psnr_average_f(x_batch_truth, x_batch_burst)
+                psnr_average.append(onestep_psnr_average.numpy())
+                for i in range(params["BURST_LENGTH"]):
+                    psnr_perlayer[i].append(onestep_psnr_perlayer['da{}_noshow'.format(i)].numpy())
             grads = tape.gradient(loss, model.trainable_weights)
             optimizer.apply_gradients(zip(grads, model.trainable_weights))
             #print(len(model.trainable_weights))
@@ -130,10 +144,17 @@ def main():
             if step % 10 == 0:
                 print('step %s: mean loss = %s' % (step, loss_metric.result()))
                 print('step %s: psnr = %s' % (step, np.mean(psnr)))
+                print('step %s: psnrnoshow0 = %s' % (step, np.mean(psnr_perlayer[0])))
+                print('step %s: psnrburst0 = %s' % (step, np.mean(psnr_noise0)))
+                print('step %s: psnraverage = %s' % (step, np.mean(psnr_average)))
         ckpt.step.assign_add(1)
         with train_summary_writer.as_default():
             tf.summary.scalar('loss', loss_metric.result(), step=epoch)
-            tf.summary.scalar('accuracy', tf.convert_to_tensor(np.mean(psnr)), step=epoch)
+            tf.summary.scalar('psnr_deblur', tf.convert_to_tensor(np.mean(psnr)), step=epoch)
+            tf.summary.scalar('psnr_noise0', tf.convert_to_tensor(np.mean(psnr_noise0)), step=epoch)
+            tf.summary.scalar('psnr_average', tf.convert_to_tensor(np.mean(psnr_average)), step=epoch)
+            for i in range(params["BURST_LENGTH"]): 
+                tf.summary.scalar('da{}_noshow'.format(i), tf.convert_to_tensor(np.mean(psnr_perlayer[i])), step=epoch)
             
         loss_metric.reset_states()
         if int(ckpt.step) % 1 == 0:

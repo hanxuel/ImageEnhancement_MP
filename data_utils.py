@@ -97,12 +97,27 @@ def psnr_each_layer(y_true, y_pred):
     gt = y_true[...,0] #tf.expand_dims(y_true[...,0],axis=-1)
     invert_gt = invert_preproc(gt,white_noise)#.numpy()
     invert_perlayer={}
-    psnr = []
+    psnr = {}
     for i in range(burst_size):
         invert_perlayer['da{}_noshow'.format(i)]=invert_preproc(y_pred[...,i+1],white_noise)
-        psnr.append(psnr_tf_batch(invert_perlayer['da{}_noshow'.format(i)],invert_gt)) 
+        psnr['da{}_noshow'.format(i)] = psnr_tf_batch(invert_perlayer['da{}_noshow'.format(i)],invert_gt)
     return psnr
-
+def psnr_burst0(y_true, x_batch_burst):
+    white_noise=tf.expand_dims(y_true[...,1],axis=-1)
+    white_noise = tf.reduce_mean(tf.reduce_mean(white_noise,axis=1,keepdims=True),axis=2,keepdims=True)
+    gt = y_true[...,0] #tf.expand_dims(y_true[...,0],axis=-1)
+    invert_gt = invert_preproc(gt,white_noise)#.numpy()
+    noise0 = x_batch_burst[...,0]
+    invert_noise0 = invert_preproc(noise0,white_noise)
+    return psnr_tf_batch(invert_noise0, invert_gt)
+def psnr_average_f(y_true, x_batch_burst):
+    white_noise=tf.expand_dims(y_true[...,1],axis=-1)
+    white_noise = tf.reduce_mean(tf.reduce_mean(white_noise,axis=1,keepdims=True),axis=2,keepdims=True)
+    gt = y_true[...,0] #tf.expand_dims(y_true[...,0],axis=-1)
+    invert_gt = invert_preproc(gt,white_noise)#.numpy()
+    average =tf.reduce_mean(x_batch_burst, axis=-1)
+    invert_average = invert_preproc(average,white_noise)
+    return psnr_tf_batch(invert_average, invert_gt)
 class DataLoader():
     def __init__(self, params):
         self.params=params
@@ -154,7 +169,7 @@ class DataLoader():
 
         first2 = demosaic_truth[...,:2]
         demosaic_truth = demosaic_truth[...,0,:] if self.color else demosaic_truth[...,0]
-        demosaic_truth = tf.expand_dims(demosaic_truth,2)
+        demosaic_truth = tf.expand_dims(demosaic_truth,-1)
         white_level = tf.tile(white_level,[height,width,1])
         return noisy,tf.concat([demosaic_truth,white_level],axis=-1)
     
