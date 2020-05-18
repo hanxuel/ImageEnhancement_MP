@@ -1,0 +1,2 @@
+run experiments:
+patch size: 64*64 Basis_num:10 epochs:200

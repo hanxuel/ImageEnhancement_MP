@@ -121,15 +121,23 @@ def psnr_average_f(y_true, x_batch_burst):
 class DataLoader():
     def __init__(self, params):
         self.params=params
-        self.root = params["root"]
+        self.train_path = params["train_path"]
         self.batch_size = params["batch_size"]
-        data_root = pathlib.Path(self.root)
+        data_root = pathlib.Path(self.train_path)
 
         self.all_img_paths = list(data_root.glob('*.jpg'))
         self.all_img_paths = [str(path) for path in self.all_img_paths]
         self.count = len(self.all_img_paths)
         random.shuffle(self.all_img_paths)
         self.color = params["color"]
+        
+        if params.has_key('val_path'):
+            self.val_path = params["val_path"]
+            val_data_root = pathlib.Path(self.val_path)
+            self.val_all_img_paths = list(val_data_root.glob('*.jpg'))
+            self.val_all_img_paths = [str(path) for path in self.val_all_img_paths]
+            self.val_count = len(self.val_all_img_paths)
+            random.shuffle(self.val_all_img_paths)
         #BURST_LENGTH=8
 
     @staticmethod
@@ -180,9 +188,19 @@ class DataLoader():
         return DataLoader.preprocess_image(self,image,params)
     def get_ds(self):
         path_ds = tf.data.Dataset.from_tensor_slices(self.all_img_paths)
-        #label_ds = tf.data.Dataset.from_tensor_slices(self.all_img_labels)
         image_ds = path_ds.map(lambda x:self.load_and_preprocess_image(self, x, self.params))
-        image_ds = image_ds.shuffle(self.count).repeat(3).batch(self.batch_size)
+        buffer_size = min(10000,self.count)
+        image_ds = image_ds.shuffle(buffer_size).repeat(3).batch(self.batch_size)
+        
+        #suggest
+        #image_ds = image_ds.apply(tf.data.experimental.shuffle_and_repeat(buffer_size=self.count))
+        #image_ds = image_ds.batch(self.batch_size)
+        return image_ds
+    def get_val_ds(self):
+        val_path_ds = tf.data.Dataset.from_tensor_slices(self.val_all_img_paths)
+        image_ds = val_path_ds.map(lambda x:self.load_and_preprocess_image(self, x, self.params))
+        buffer_size = min(10000,self.val_count)
+        image_ds = image_ds.shuffle(buffer_size).repeat(3).batch(self.batch_size)
         
         #suggest
         #image_ds = image_ds.apply(tf.data.experimental.shuffle_and_repeat(buffer_size=self.count))

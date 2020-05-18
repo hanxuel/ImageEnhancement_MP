@@ -50,6 +50,7 @@ def main():
     #tf.logging.set_verbosity(tf.logging.INFO)
     params = {
         "train_path":args.train_path,
+        "val_path":args.val_path,
         "batch_size":args.batch_size,
         "color":args.color,
         "height":args.height,
@@ -67,22 +68,12 @@ def main():
         }
     #current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     #train_log_dir = '.\\logs\\gradient_tape\\' + current_time + '\\train'
-    train_log_dir = '.\\logs\\gradient_tape\\20200517-175525'+'\\train'
-    #test_log_dir = 'logs/gradient_tape/' + current_time + '/test'
-    train_summary_writer = tf.summary.create_file_writer(train_log_dir)
-    #test_summary_writer = tf.summary.create_file_writer(test_log_dir)
-    #tf.summary.trace_on(graph=True, profiler=True)
+    log_dir = '.\\logs\\gradient_tape\\20200517-175525'+'\\train'
+    summary_writer = tf.summary.create_file_writer(log_dir)
     model=Simplemodel(params)    
-    image_ds = DataLoader(params).get_ds()
-# =============================================================================
-#     ###try to visualize with keras api
-#     for step, x_batch_train in enumerate(image_ds.take(1)):
-#         x_batch_burst, x_batch_truth=x_batch_train
-#         with tf.GradientTape() as tape:
-#             reconstructed = model(x_batch_burst)
-#     print(model.summary())
-#     plot_model(model, to_file='model.png')
-# =============================================================================
+    train_image_ds = DataLoader(params).get_ds()
+    val_image_ds = DataLoader(params).get_val_ds()
+    
     epochs = params["nepochs"]
     optimizer = tf.keras.optimizers.Adam(learning_rate=params["learning_rate"])
     loss_metric = tf.keras.metrics.Mean()
@@ -97,7 +88,7 @@ def main():
     
     
 # =============================================================================
-#     TensorBoardcallback = tf.keras.callbacks.TensorBoard(log_dir=train_log_dir,
+#     TensorBoardcallback = tf.keras.callbacks.TensorBoard(log_dir=log_dir,
 #                                                          histogram_freq=1,
 #                                                          write_graph=True, write_grads=False, write_images=True,
 #                                                          embeddings_freq=0, embeddings_layer_names=None,
@@ -109,14 +100,14 @@ def main():
 #               callbacks=[TensorBoardcallback])
 # =============================================================================
     # Iterate over epochs.
-    for epoch in range(152,epochs):
+    for epoch in range(epochs):
         print('Start of epoch %d' % (epoch,))
         # Iterate over the batches of the dataset.
         psnr = []
         psnr_perlayer=[[0]*1 for i in range(params["BURST_LENGTH"])]
         psnr_noise0 = []
         psnr_average = []
-        for step, x_batch_train in enumerate(image_ds):
+        for step, x_batch_train in enumerate(train_image_ds):
             x_batch_burst, x_batch_truth=x_batch_train
             with tf.GradientTape() as tape:
                 reconstructed = model(x_batch_burst)
@@ -149,7 +140,7 @@ def main():
                 print('step %s: psnrburst0 = %s' % (step, np.mean(psnr_noise0)))
                 print('step %s: psnraverage = %s' % (step, np.mean(psnr_average)))
         ckpt.step.assign_add(1)
-        with train_summary_writer.as_default():
+        with summary_writer.as_default():
             tf.summary.scalar('loss', loss_metric.result(), step=epoch)
             tf.summary.scalar('psnr_deblur', tf.convert_to_tensor(np.mean(psnr)), step=epoch)
             tf.summary.scalar('psnr_noise0', tf.convert_to_tensor(np.mean(psnr_noise0)), step=epoch)
@@ -161,7 +152,49 @@ def main():
         if int(ckpt.step) % 1 == 0:
             save_path = manager.save()
             print("Saved checkpoint for step {}: {}".format(int(ckpt.step), save_path))
+        
+        
+        val_psnr = []
+        val_psnr_perlayer=[[0]*1 for i in range(params["BURST_LENGTH"])]
+        val_psnr_noise0 = []
+        val_psnr_average = []
+        for step, x_batch_val in enumerate(val_image_ds):
+            x_batch_burst, x_batch_truth=x_batch_val
+            with tf.GradientTape() as tape:
+                reconstructed = model(x_batch_burst)
+                #print("tf.shape(reconstructed)",tf.shape(reconstructed))
+                # Compute reconstruction loss
+                loss = deblur_layer_loss(x_batch_truth, reconstructed)
+                loss += sum(model.losses)  # Add KLD regularization loss
+                
+                onestep_psnr =psnr_deblur(x_batch_truth, reconstructed)
+                val_psnr.append(onestep_psnr.numpy())
+                
+                onestep_psnr_perlayer = psnr_each_layer(x_batch_truth, reconstructed)
+                
+                onestep_psnr_noise0 = psnr_burst0(x_batch_truth, x_batch_burst)
+                val_psnr_noise0.append(onestep_psnr_noise0.numpy())
+                
+                onestep_psnr_average = psnr_average_f(x_batch_truth, x_batch_burst)
+                val_psnr_average.append(onestep_psnr_average.numpy())
+                for i in range(params["BURST_LENGTH"]):
+                    val_psnr_perlayer[i].append(onestep_psnr_perlayer['da{}_noshow'.format(i)].numpy())
+            loss_metric(loss)
+        print('-----------------------------validation resule------------------------------')
+        print('step %s: mean loss = %s' % (step, loss_metric.result()))
+        print('step %s: val_psnr = %s' % (step, np.mean(val_psnr)))
+        print('step %s: val_psnrnoshow0 = %s' % (step, np.mean(val_psnr_perlayer[0])))
+        print('step %s: val_psnrburst0 = %s' % (step, np.mean(val_psnr_noise0)))
+        print('step %s: val_psnraverage = %s' % (step, np.mean(val_psnr_average)))
+        with summary_writer.as_default():
+            tf.summary.scalar('val_loss', loss_metric.result(), step=epoch)
+            tf.summary.scalar('val_psnr_deblur', tf.convert_to_tensor(np.mean(val_psnr)), step=epoch)
+            tf.summary.scalar('val_psnr_noise0', tf.convert_to_tensor(np.mean(val_psnr_noise0)), step=epoch)
+            tf.summary.scalar('val_psnr_average', tf.convert_to_tensor(np.mean(val_psnr_average)), step=epoch)
+            for i in range(params["BURST_LENGTH"]): 
+                tf.summary.scalar('val_da{}_noshow'.format(i), tf.convert_to_tensor(np.mean(val_psnr_perlayer[i])), step=epoch)
+            
+        loss_metric.reset_states()
 
 if __name__ == "__main__":
     main()
-

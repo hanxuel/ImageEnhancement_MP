@@ -175,20 +175,16 @@ class Convolve_perlayer(layers.Layer):
 
 class Basis_kpn(tf.keras.Model):
     def __init__(self,
-                 height=128,
-                 width=128,
-                 burst_length=8,
-                 B=90,
-                 K=15,
+                 params,
                  name='basis_kpn',
                  **kwargs):
         super(Basis_kpn, self).__init__(name=name, **kwargs)
-        self.burst_length=burst_length
-        self.K = K
-        self.height = height
-        self.width = width
-        self.B=B
-        self.layer0 = layers.Conv2D(64,3, padding="same", activation='relu',input_shape=(height, width, burst_length),name="weight0")
+        self.burst_length=params["BURST_LENGTH"]
+        self.K = params['Kernel_size']
+        self.height = params['height']
+        self.width = params['width']
+        self.B=params['Basis_num']
+        self.layer0 = layers.Conv2D(64,3, padding="same", activation='relu',input_shape=(self.height, self.width, self.burst_length),name="weight0")
         self.down1 = Downblock(intermediate_dim=64, name='downblock1')
         self.down2 = Downblock(intermediate_dim=128, name='downblock2')
         self.down3 = Downblock(intermediate_dim=256, name='downblock3')
@@ -206,7 +202,7 @@ class Basis_kpn(tf.keras.Model):
         
         self.layer2_1 = layers.Conv2D(64,3, padding="same", activation='relu',name="weight2_1")
         self.layer2_2 = layers.Conv2D(64,3, padding="same", activation='relu',name="weight2_2")
-        self.coef = layers.Conv2D(B,3, padding="same", activation='relu',name="coef")
+        self.coef = layers.Conv2D(self.B,3, padding="same", activation='relu',name="coef")
         
         self.pool_skip1 = Poolskip(k=2, name="pool_skip1")
         self.pool_skip2 = Poolskip(k=4, name="pool_skip2")
@@ -219,9 +215,9 @@ class Basis_kpn(tf.keras.Model):
         
         self.layer3_1 = layers.Conv2D(128,2, padding="valid", activation='relu',name="weight3_1")
         self.layer3_2 = layers.Conv2D(128,3, padding="same", activation='relu',name="weight3_2")
-        self.layer3_3 = layers.Conv2D(burst_length*B,3, padding="same", activation='relu',name="weight3_3")
+        self.layer3_3 = layers.Conv2D(self.burst_length*self.B,3, padding="same", activation='relu',name="weight3_3")
         
-        #self.convolve = Convolve(K,name ="convolve")
+        self.convolve = Convolve(self.K,name ="convolve")
         self.convolve_perlayer = Convolve_perlayer(self.K,self.burst_length,name ="convolve_perlayer")
     def call(self, inputs):
         inputs0 = self.layer0(inputs)
@@ -266,19 +262,24 @@ class Basis_kpn(tf.keras.Model):
         
         
         ish = tf.shape(Basis)
-        print("basis.shape",ish)
+        #print("basis.shape",ish)
         Basis = tf.nn.softmax(tf.reshape(Basis,[ish[0],self.K**2*self.burst_length,self.B]),axis=1)
         Basis = tf.reshape(Basis,[ish[0],self.K,self.K,self.burst_length,self.B])
         
         Coefficients = tf.expand_dims(tf.expand_dims(tf.expand_dims(Coef,3),3), 3)
         Coefficients = tf.tile(Coefficients,[1,1,1,self.K,self.K,self.burst_length,1])
-        print("Coefficients.shape",tf.shape(Coefficients))
+        #print("Coefficients.shape",tf.shape(Coefficients))
         Basis = tf.expand_dims(tf.expand_dims(Basis,1),1)
         Basis = tf.tile(Basis,[1,self.height,self.width,1,1,1,1])
         filts = tf.reduce_sum(Basis*Coefficients,axis=-1)
-        #Deblur = self.convolve(inputs, filts)
-        Deblur = self.convolve_perlayer(inputs, filts)
-        return Deblur
+        #print("input.shape",tf.shape(inputs))
+        #print("filts.shape",tf.shape(filts))
+        Deblur = tf.expand_dims(self.convolve(inputs, filts),-1)
+        #batch_size*H*W*1
+        Deblur_perburst = self.convolve_perlayer(inputs, filts)
+        #batch_size*H*W*burst_length
+        output = tf.concat([Deblur,Deblur_perburst], axis=-1)
+        return output 
 
 
 
