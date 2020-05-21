@@ -127,11 +127,13 @@ class DataLoader():
 
         self.all_img_paths = list(data_root.glob('*.jpg'))
         self.all_img_paths = [str(path) for path in self.all_img_paths]
+        self.all_img_paths = self.all_img_paths[:10000]
         self.count = len(self.all_img_paths)
         random.shuffle(self.all_img_paths)
         self.color = params["color"]
         
-        if params.has_key('val_path'):
+        
+        if 'val_path' in params:
             self.val_path = params["val_path"]
             val_data_root = pathlib.Path(self.val_path)
             self.val_all_img_paths = list(val_data_root.glob('*.jpg'))
@@ -180,12 +182,88 @@ class DataLoader():
         demosaic_truth = tf.expand_dims(demosaic_truth,-1)
         white_level = tf.tile(white_level,[height,width,1])
         return noisy,tf.concat([demosaic_truth,white_level],axis=-1)
-    
+        #noise [height, width, burst_length]
+        #[height, width, 2]
     @staticmethod
     def load_and_preprocess_image(self,path,params):
         image = tf.io.read_file(path)
         #DataLoader.preprocess_image(self,image,params)
         return DataLoader.preprocess_image(self,image,params)
+    
+    def parse_function(self,example_proto, params):
+        burst_length = params["BURST_LENGTH"]
+        height_2=2*params["height"]
+        width_2=2*params["width"]
+        height=2*params["height"]
+        width=2*params["width"]
+        features={
+                'readvar': tf.FixedLenFeature([], tf.string),
+                'shotfactor': tf.FixedLenFeature([], tf.string),
+                'blacklevels': tf.FixedLenFeature([], tf.string),
+                'channelgain': tf.FixedLenFeature([], tf.string),
+                'burst_raw': tf.FixedLenFeature([], tf.string),
+                'merge_raw': tf.FixedLenFeature([], tf.string),
+                'depth': tf.FixedLenFeature([], tf.int64),
+                'height': tf.FixedLenFeature([], tf.int64),
+                'width': tf.FixedLenFeature([], tf.int64),
+                }
+        parsed_features = tf.io.parse_single_example(example_proto, features)
+        burst, merged, readvar, shotfactor = self.decode(parsed_features)
+        
+        d = tf.shape(burst)[-1]
+        burst = tf.cond(d > burst_length, lambda: burst[...,:burst_length], lambda: burst)
+        burst = tf.cond(d < burst_length, lambda: tf.pad(burst, [[0,0],[0,0],[0,burst_length-d]]), lambda: burst)
+
+        mosaic, demosaic = self.sample_patch(burst, merged, height_2, width_2, burst_length)
+        burst = tf.reshape(mosaic, [height_2, width_2, burst_length])
+        demosaic = tf.reshape(demosaic, [height_2, width_2, 3])
+        readvar = tf.reshape(readvar, [1, 4])
+        shotfactor = tf.reshape(shotfactor, [1, 4])
+# =============================================================================
+#         valid_mask = tf.ones([1,tf.minimum(burst_length,d)])
+#         valid_mask = tf.cond(burst_length > d, lambda : tf.concat([valid_mask,tf.zeros([1,burst_length-d])], axis=-1), lambda : valid_mask)
+#         valid_mask = tf.reshape(valid_mask, [burst_length])
+# =============================================================================
+        noisy = self.batch_down2(burst)
+        demosaic_truth = self.batch_down2(tf.reduce_mean(demosaic, axis=-1,keepdims=True))
+        #truth_all = tf.expand_dims(demosaic_truth, axis=-1)
+        #shift = tf.zeros([batch, BURST_LENGTH-1])
+        
+        #noisiness = tf.reshape(tf.reduce_mean(readvar,axis=1),[1,1,1]) + tf.maximum(0.,noisy[...,0:1]) * tf.reshape(tf.reduce_mean(shotfactor,axis=1),[1,1,1])
+        #sig_read = tf.reshape(tf.sqrt(tf.reduce_mean(noisiness, axis=[0,1,2])), [1,1,1])
+        #sig_shot = sig_read
+        #sig_read = tf.sqrt(noisiness)
+        white_level = tf.reduce_max(tf.reshape(demosaic_truth, [-1]))
+        white_level = tf.reshape(white_level, [1,1,1])
+        white_level = tf.tile(white_level,[height,width,1])
+        return noisy,tf.concat([demosaic_truth,white_level],axis=-1)
+# =============================================================================
+#         if color:
+#           noisy = small_bayer_stack(burst)
+#           demosaic_truth = demosaic
+#           # dumb0 = dumb_tf_demosaic(burst[...,0])
+#           # dumb_avg = dumb_tf_demosaic(tf.reduce_mean(burst, axis=-1))
+#           dumb0 = dumb_tf_demosaic(tf22reshape(noisy[...,::BURST_LENGTH]))
+#           dumb_avg = dumb_tf_demosaic(tf22reshape(tf.reduce_mean(tf.reshape(noisy, [tf.shape(noisy)[0],tf.shape(noisy)[1],tf.shape(noisy)[2],4,BURST_LENGTH]), axis=-2)))
+#           white_level = tf.ones([batch, 1, 1, 1])
+# =============================================================================
+        
+        
+# =============================================================================
+#         mosaic, demosaic = burst2patches(burst, merged, height, width, depth, burst_length)
+#         mosaic = tf.reshape(mosaic, [depth, height, width, burst_length])
+#         demosaic = tf.reshape(demosaic, [depth, height, width, 3])
+#         readvar = tf.tile(tf.reshape(readvar, [1, 4]), [depth, 1])
+#         shotfactor = tf.tile(tf.reshape(shotfactor, [1, 4]), [depth, 1])
+# =============================================================================
+    
+# =============================================================================
+#         valid_mask = tf.ones([1,tf.minimum(burst_length,d)])
+#         valid_mask = tf.cond(burst_length > d, lambda : tf.concat([valid_mask,tf.zeros([1,burst_length-d])], axis=-1), lambda : valid_mask)
+#         valid_mask = tf.tile(valid_mask, [depth, 1])
+#         valid_mask = tf.reshape(valid_mask, [depth, burst_length])
+# =============================================================================
+
     def get_ds(self):
         path_ds = tf.data.Dataset.from_tensor_slices(self.all_img_paths)
         image_ds = path_ds.map(lambda x:self.load_and_preprocess_image(self, x, self.params))
@@ -200,14 +278,38 @@ class DataLoader():
         val_path_ds = tf.data.Dataset.from_tensor_slices(self.val_all_img_paths)
         image_ds = val_path_ds.map(lambda x:self.load_and_preprocess_image(self, x, self.params))
         buffer_size = min(10000,self.val_count)
-        image_ds = image_ds.shuffle(buffer_size).repeat(3).batch(self.batch_size)
+        image_ds = image_ds.shuffle(buffer_size).repeat(2).batch(self.batch_size)
+        
         
         #suggest
         #image_ds = image_ds.apply(tf.data.experimental.shuffle_and_repeat(buffer_size=self.count))
         #image_ds = image_ds.batch(self.batch_size)
         return image_ds
-
+    def get_real_ds(self):
+        path_ds = tf.data.Dataset.from_tensor_slices(self.all_img_paths)
+        dataset = path_ds.interleave(map_func=tf.data.TFRecordDataset, cycle_length=tf.data.experimental.AUTOTUNE)
+        dataset = dataset.map(lambda x:self.parse_function(self, x, self.params), num_parallel_calls=tf.data.experimental.AUTOTUNE)
     #@staticmethod
+# =============================================================================
+#     def burst2patches(self,burst, merged, height, width, depth, burst_length):
+#         mosaic, demosaic = self.sample_patch(burst, merged, height, width, burst_length)
+#         mosaic = tf.expand_dims(mosaic, axis=0)
+#         demosaic = tf.expand_dims(demosaic, axis=0)
+#         for i in range(depth-1):
+#             m, d = sample_patch(burst, merged, height, width, burst_length)
+#             m = tf.expand_dims(m, axis=0)
+#             d = tf.expand_dims(d, axis=0)
+#             mosaic = tf.concat((mosaic, m), axis=0)
+#             demosaic = tf.concat((demosaic, d), axis=0)
+#         return mosaic, demosaic
+# =============================================================================
+    def sample_patch(self,burst, merged, height, width, burst_length):
+        y = tf.random_uniform([1], 0, tf.shape(burst)[0]-height, tf.int32)
+        x = tf.random_uniform([1], 0, tf.shape(burst)[1]-width, tf.int32)
+        y, x = (y[0]//2)*2, (x[0]//2)*2
+        mosaic = burst[y:y+height, x:x+width,:burst_length]
+        demosaic = merged[y:y+height, x:x+width,:]
+        return mosaic, demosaic
     def make_stack_hqjitter(self,image, height, width, BURST_LENGTH, to_shift, upscale, jitter):
         j_up = jitter * upscale
         h_up = height * upscale + 2 * j_up
@@ -220,8 +322,7 @@ class DataLoader():
     #@staticmethod
     def make_batch_hqjitter(self,patches, BURST_LENGTH, height, width,\
                             to_shift, upscale, jitter, smalljitter):
-        # patches is [BURST_LENGTH, h_up, w_up, 3]
-        #jiang every patches repeat two times in each batch
+        # patches is [h_up, w_up, 3]
         j_up = jitter * upscale
         h_up = height * upscale # + 2 * j_up
         w_up = width * upscale # + 2 * j_up
@@ -311,14 +412,14 @@ class DataLoader():
 #         return ds
 # =============================================================================
 
+
 # =============================================================================
-# 
 # params = {
-#         "root":'G:\\master_thesis\Cengiz\BurstDenoising\SmallValidationdata',
+#         "train_path":'G:\\master_thesis\Cengiz\BurstDenoising\Testdata',
 #         "batch_size":1,
 #         "color":False,
-#         "height":128,
-#         "width":128,
+#         "height":64,
+#         "width":64,
 #         "degamma":2.2,
 #         "to_shift":1.,
 #         "upscale":4,
