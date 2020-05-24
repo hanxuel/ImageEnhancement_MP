@@ -133,6 +133,7 @@ class DataLoader():
         self.batch_size = params["batch_size"]
         data_root = pathlib.Path(self.train_path)
         self.color = params["color"]
+        self.percent = params["percent"]
         if self.color:
             self.channels = 3
             self.all_img_paths = list(data_root.glob('*.jpg'))
@@ -141,7 +142,8 @@ class DataLoader():
             self.all_img_paths = list(data_root.glob('*.png'))   
         print("self.channels",self.channels)
         self.all_img_paths = [str(path) for path in self.all_img_paths]
-        self.all_img_paths = self.all_img_paths[:10000]
+        valid = int(self.percent* len(self.all_img_paths))
+        self.all_img_paths = self.all_img_paths[:valid]
         self.count = len(self.all_img_paths)
         #random.shuffle(self.all_img_paths)
         
@@ -158,13 +160,10 @@ class DataLoader():
             self.val_count = len(self.val_all_img_paths)
             print("number of val dataset--------------------",self.val_count)
             #random.shuffle(self.val_all_img_paths)
-            print(self.val_all_img_paths)
+            #print(self.val_all_img_paths)
             #BURST_LENGTH=8
     def preprocess_image(self,image,params):
-        if self.color:
-            image = tf.image.decode_jpeg(image, channels=3)
-        else:
-            image = tf.image.decode_png(image, channels=1)
+        
         if 'height' in params:
             height=params["height"]
             width=params["width"]
@@ -178,11 +177,11 @@ class DataLoader():
         jitter=params["jitter"]
         smalljitter=params["smalljitter"]
         print("BURST_LENGTH",BURST_LENGTH)
-        patches = self.make_stack_hqjitter((tf.cast(image, tf.float32) / 255.)**degamma,\
+        patches = self.make_first_truth((tf.cast(image, tf.float32) / 255.)**degamma,\
                                                  height, width, BURST_LENGTH, to_shift, upscale, jitter)
         print("patches size",tf.shape(patches))
         #PATCHES ================= [1, 256, 256, 3]
-        demosaic_truth = self.make_batch_hqjitter(patches, BURST_LENGTH, height, width, to_shift, upscale, jitter, smalljitter)
+        demosaic_truth = self.make_truth_hqjitter(patches, BURST_LENGTH, height, width, to_shift, upscale, jitter, smalljitter)
         print("demosaic_truth size",tf.shape(demosaic_truth))
 
         demosaic_truth = tf.reduce_mean(demosaic_truth, axis=-2)
@@ -213,11 +212,19 @@ class DataLoader():
         #print(tf.shape(demosaic_truth))
         white_level = tf.tile(white_level,[height,width,1])
         return noisy,tf.concat([demosaic_truth,white_level],axis=-1)
+    
+
     def load_and_preprocess_image(self,image,params):
         #image = tf.io.read_file(path)
         #DataLoader.preprocess_image(self,image,params)
         return self.preprocess_image(image,params)
-    
+    def load_image(self, path, params):
+        image = tf.io.read_file(path)
+        if self.color:
+            image = tf.image.decode_jpeg(image, channels=3)
+        else:
+            image = tf.image.decode_png(image, channels=1)
+        return image
     def parse_function(self,example_proto, params):
         burst_length = params["BURST_LENGTH"]
         height_2=2*params["height"]
@@ -295,28 +302,24 @@ class DataLoader():
     def get_ds(self):
         current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         path_ds = tf.data.Dataset.from_tensor_slices(self.all_img_paths)
-        image_ds = path_ds.map(lambda x: tf.io.read_file(x),num_parallel_calls=AUTOTUNE).map(lambda x:self.load_and_preprocess_image(x, self.params),num_parallel_calls=AUTOTUNE).cache(filename='traindataset'+current_time)
-        buffer_size = min(10000,self.count)
-        image_ds = image_ds.shuffle(buffer_size).batch(self.batch_size)
+        image_ds = path_ds.map(lambda x: self.load_image(x,self.params)).cache(filename='traindataset'+current_time)
+        image_ds = image_ds.shuffle(self.count).map(lambda x:self.preprocess_image(x, self.params)).repeat() 
+        image_ds = image_ds.batch(self.batch_size,drop_remainder=True)
         image_ds = image_ds.prefetch(buffer_size=AUTOTUNE)
-# =============================================================================
-#         #suggest
-#         ds = image_ds.apply(tf.data.experimental.shuffle_and_repeat(buffer_size=buffer_size))
-#         ds = ds.batch(self.batch_size)
-#         ds = ds.prefetch(buffer_size=AUTOTUNE)
-# =============================================================================
         return image_ds
     def get_val_ds(self):
         current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         val_path_ds = tf.data.Dataset.from_tensor_slices(self.val_all_img_paths)
-        image_ds = val_path_ds.map(lambda x: tf.io.read_file(x),num_parallel_calls=AUTOTUNE).map(lambda x:self.load_and_preprocess_image(x, self.params),num_parallel_calls=AUTOTUNE).cache(filename='valdataset'+current_time)
-        buffer_size = min(10000,self.val_count)
-        image_ds = image_ds.shuffle(buffer_size).batch(self.batch_size)
+        image_ds = val_path_ds.map(lambda x: self.load_image(x,self.params)).cache(filename='valdataset'+current_time)
+        image_ds = image_ds.shuffle(self.val_count).map(lambda x:self.preprocess_image(x, self.params))#.repeat() #
+        image_ds = image_ds.batch(self.batch_size,drop_remainder=True)
         image_ds = image_ds.prefetch(buffer_size=AUTOTUNE)
-        
         #suggest
-        #image_ds = image_ds.apply(tf.data.experimental.shuffle_and_repeat(buffer_size=self.count))
-        #image_ds = image_ds.batch(self.batch_size)
+# =============================================================================
+#         image_ds = image_ds.apply(tf.data.experimental.shuffle_and_repeat(buffer_size=self.val_count)).map(lambda x:self.preprocess_image(x, self.params))
+#         image_ds = image_ds.batch(self.batch_size)
+#         image_ds = image_ds.prefetch(buffer_size=AUTOTUNE)
+# =============================================================================
         return image_ds
     def get_real_ds(self):
         path_ds = tf.data.Dataset.from_tensor_slices(self.all_img_paths)
@@ -349,7 +352,7 @@ class DataLoader():
         mosaic = burst[y:y+height, x:x+width,:burst_length]
         demosaic = merged[y:y+height, x:x+width,:]
         return mosaic, demosaic
-    def make_stack_hqjitter(self,image, height, width, BURST_LENGTH, to_shift, upscale, jitter):
+    def make_first_truth(self,image, height, width, BURST_LENGTH, to_shift, upscale, jitter):
         j_up = jitter * upscale
         h_up = height * upscale + 2 * j_up
         w_up = width * upscale + 2 * j_up
@@ -359,7 +362,7 @@ class DataLoader():
         return tf.image.random_crop(image, [h_up, w_up, self.channels])
         
     #@staticmethod
-    def make_batch_hqjitter(self,patches, BURST_LENGTH, height, width,\
+    def make_truth_hqjitter(self,patches, BURST_LENGTH, height, width,\
                             to_shift, upscale, jitter, smalljitter):
         # patches is [h_up, w_up, 3]
         j_up = jitter * upscale
@@ -484,87 +487,4 @@ class DataLoader():
 #     print(tf.shape(noise))
 # =============================================================================
     
-    
-    
-# =============================================================================
-# class DataLoader():
-#     BURST_LENGTH=8
-#     def __init__(self, params):
-#         self.root = params["root"]
-#         self.batch_size = params["batch_size"]
-#         data_root = pathlib.Path(self.root)
-# 
-#         self.all_img_paths = list(data_root.glob('*.jpg'))
-#         self.all_img_paths = [str(path) for path in self.all_img_paths]
-#         self.count = len(self.all_img_paths)
-#         random.shuffle(self.all_img_paths)
-#         self.color = params["color"]
-#         #BURST_LENGTH=8
-# 
-#     @staticmethod
-#     def preprocess_image(image):
-#         #BURST_LENGTH=8
-#         height=128
-#         width=128
-#         degamma=2.2
-#         to_shift=1.
-#         upscale=4
-#         jitter=16
-#         smalljitter=2
-#         image = tf.image.decode_jpeg(image, channels=3)
-#         patches = DataLoader.make_stack_hqjitter((tf.cast(image, tf.float32) / 255.)**degamma,\
-#                                                  height, width, DataLoader.BURST_LENGTH, to_shift, upscale, jitter)
-#         #PATCHES ================= [1, 256, 256, 3]
-#         patches = DataLoader.make_batch_hqjitter(patches, DataLoader.BURST_LENGTH, height, width, to_shift, upscale, jitter, smalljitter)
-#   
-#         return patches
-#     
-#     @staticmethod
-#     def load_and_preprocess_image(path):
-#         image = tf.io.read_file(path)
-#         return DataLoader.preprocess_image(image)
-#     @staticmethod
-#     def make_stack_hqjitter(image, height, width, BURST_LENGTH, to_shift, upscale, jitter):
-#         j_up = jitter * upscale
-#         h_up = height * upscale + 2 * j_up
-#         w_up = width * upscale + 2 * j_up
-#         v_error = tf.maximum((h_up - tf.shape(image)[0] + 1) // 2, 0)
-#         h_error = tf.maximum((w_up - tf.shape(image)[1] + 1) // 2, 0)
-#         image = tf.pad(image, [[v_error, v_error],[h_error,h_error],[0,0]])
-#         return tf.image.random_crop(image, [h_up, w_up, 3])
-#         
-#     @staticmethod
-#     def make_batch_hqjitter(patches, BURST_LENGTH, height, width,\
-#                             to_shift, upscale, jitter, smalljitter):
-#         # patches is [BURST_LENGTH, h_up, w_up, 3]
-#         #jiang every patches repeat two times in each batch
-#         j_up = jitter * upscale
-#         h_up = height * upscale # + 2 * j_up
-#         w_up = width * upscale # + 2 * j_up
-#         bigj_patches = patches
-#         delta_up = (jitter - smalljitter) * upscale
-#         smallj_patches = patches[delta_up:-delta_up, delta_up:-delta_up, ...]
-#         
-#         curr = [patches[j_up:-j_up, j_up:-j_up, :]]
-#         prob = tf.minimum(tf.cast(tf.compat.v1.random_poisson(1.5, []), tf.float32)/BURST_LENGTH, 1.)
-#         for k in range(BURST_LENGTH - 1):
-#             flip = tf.compat.v1.random_uniform([])
-#             p2use = tf.cond(flip < prob, lambda : bigj_patches, lambda : smallj_patches)
-#             curr.append(tf.compat.v1.random_crop(p2use, [h_up, w_up, 3]))
-#         curr = tf.stack(curr, axis=0)
-#         curr = tf.image.resize(curr, [height, width], method=tf.image.ResizeMethod.AREA)
-#         curr = tf.transpose(curr, [1,2,3,0])
-#         return curr
-#     def get_ds(self):
-#         path_ds = tf.data.Dataset.from_tensor_slices(self.all_img_paths)
-#         #label_ds = tf.data.Dataset.from_tensor_slices(self.all_img_labels)
-#         image_ds = path_ds.map(self.load_and_preprocess_image)
-#         image_ds = image_ds.shuffle(self.count).batch(self.batch_size)
-#         
-# # =============================================================================
-# #         #suggest
-# #         image_ds = image_ds.apply(tf.data.experimental.shuffle_and_repeat(buffer_size=self.count))
-# #         image_ds = image_ds.batch(self.batch_size)
-# # =============================================================================
-#         return image_ds
-# =============================================================================
+ 
