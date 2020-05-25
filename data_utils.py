@@ -74,7 +74,20 @@ def deblur_loss(y_true, y_pred):
     #print(tf.shape(invert_gt))
     loss0 = basic_img_loss(invert_deblur,invert_gt)
     return loss0
-
+def cost_volume(Basis):
+    ish = tf.shape(Basis)
+    #print("basis shape",ish)
+    average = tf.reduce_mean(Basis,axis=-1)
+    #print("tf.shape(average)",tf.shape(average))
+    average_2 = tf.reduce_mean(tf.math.square(Basis),axis=-1)
+    #print("tf.shape(average_2)",tf.shape(average_2))
+    
+    cost = average_2 - tf.math.square(average)
+    #print("tf.shape(cost)",tf.shape(cost))
+    variance = tf.reduce_mean(cost)
+    loss1 = tf.math.reciprocal(variance, name=None)
+    loss2 = tf.math.exp(-variance, name=None)
+    return loss1+loss2
 def psnr_tf(estimate, truth):
   return -10. * tf.log(tf.reduce_mean(tf.square(estimate - truth))) / tf.math.log(10.)
 
@@ -126,28 +139,27 @@ def psnr_average_f(invert_gt, white_noise, x_batch_burst):
     average =tf.reduce_mean(x_batch_burst, axis=-1)
     invert_average = invert_preproc(average,white_noise)
     return psnr_tf_batch(invert_average, invert_gt)
+
 class DataLoader():
     def __init__(self, params):
         self.params=params
-        self.train_path = params["train_path"]
         self.batch_size = params["batch_size"]
-        data_root = pathlib.Path(self.train_path)
         self.color = params["color"]
-        self.percent = params["percent"]
-        if self.color:
-            self.channels = 3
-            self.all_img_paths = list(data_root.glob('*.jpg'))
-        else:
-            self.channels = 1
-            self.all_img_paths = list(data_root.glob('*.png'))   
-        print("self.channels",self.channels)
-        self.all_img_paths = [str(path) for path in self.all_img_paths]
-        valid = int(self.percent* len(self.all_img_paths))
-        self.all_img_paths = self.all_img_paths[:valid]
-        self.count = len(self.all_img_paths)
-        #random.shuffle(self.all_img_paths)
-        
-        print("number of train dataset--------------------",self.count)
+        if 'train_path' in params:
+            self.train_path = params["train_path"]
+            data_root = pathlib.Path(self.train_path)
+            self.percent = params["percent"]
+            if self.color:
+                self.channels = 3
+                self.all_img_paths = list(data_root.glob('*.jpg'))
+            else:
+                self.channels = 1
+                self.all_img_paths = list(data_root.glob('*.png'))   
+            self.all_img_paths = [str(path) for path in self.all_img_paths]
+            valid = int(self.percent* len(self.all_img_paths))
+            self.all_img_paths = self.all_img_paths[:valid]
+            self.count = len(self.all_img_paths)
+            print("number of train dataset--------------------",self.count)
         
         if 'val_path' in params:
             self.val_path = params["val_path"]
@@ -159,9 +171,7 @@ class DataLoader():
             self.val_all_img_paths = [str(path) for path in self.val_all_img_paths]
             self.val_count = len(self.val_all_img_paths)
             print("number of val dataset--------------------",self.val_count)
-            #random.shuffle(self.val_all_img_paths)
-            #print(self.val_all_img_paths)
-            #BURST_LENGTH=8
+
     def preprocess_image(self,image,params):
         
         if 'height' in params:

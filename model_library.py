@@ -419,7 +419,7 @@ class Simplemodel(tf.keras.Model):
         #print("basis.shape",ish)
         Basis = tf.nn.softmax(tf.reshape(Basis,[ish[0],self.K**2*self.burst_length,self.B]),axis=1)
         Basis = tf.reshape(Basis,[ish[0],self.K,self.K,self.burst_length,self.B])
-        
+        Basis_cost = Basis
         Coefficients = tf.expand_dims(tf.expand_dims(tf.expand_dims(Coef,3),3), 3)
         Coefficients = tf.tile(Coefficients,[1,1,1,self.K,self.K,self.burst_length,1])
         #print("Coefficients.shape",tf.shape(Coefficients))

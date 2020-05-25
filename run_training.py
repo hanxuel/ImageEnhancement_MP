@@ -44,7 +44,7 @@ def parse_args():
     parser.add_argument("--anneal",type=float, default=0.998)
     parser.add_argument("--regu",type=float, default=0.000)
     parser.add_argument("--checkpoint_path",default="./gray_tf_ckpts")
-    parser.add_argument("--max_step",type=int, default=10000)
+    parser.add_argument("--max_step",type=int, default=50000)
     parser.add_argument("--percent",type=float, default=1.0)
     return parser.parse_args()
 def main():
