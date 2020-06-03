@@ -184,10 +184,16 @@ class Basis_kpn(tf.keras.Model):
         super(Basis_kpn, self).__init__(name=name, **kwargs)
         self.burst_length=params["BURST_LENGTH"]
         self.K = params['Kernel_size']
-        self.height = params['height']
-        self.width = params['width']
+        #self.height = params['height']
+        #self.width = params['width']
         self.B=params['Basis_num']
-        self.layer0 = layers.Conv2D(64,3, padding="same", activation='relu',input_shape=(self.height, self.width, self.burst_length),name="weight0")
+        self.regu=params['regu']
+        self.ps = params["ps"]
+        add_lengths={'singlestd' : 1,
+                     'dualparams' : 2,
+                     'empty' : 0}
+        add_length = add_lengths[params["layer_type"]]
+        self.layer0 = layers.Conv2D(64,3, padding="same", activation='relu',input_shape=(None, None, self.burst_length+add_length),name="weight0")
         self.down1 = Downblock(intermediate_dim=64, name='downblock1')
         self.down2 = Downblock(intermediate_dim=128, name='downblock2')
         self.down3 = Downblock(intermediate_dim=256, name='downblock3')
@@ -223,6 +229,9 @@ class Basis_kpn(tf.keras.Model):
         self.convolve = Convolve(self.K,name ="convolve")
         self.convolve_perlayer = Convolve_perlayer(self.K,self.burst_length,name ="convolve_perlayer")
     def call(self, inputs):
+        height = tf.shape(inputs)[1]
+        width = tf.shape(inputs)[2]
+        Burst_images = inputs[...,0:self.burst_length]
         inputs0 = self.layer0(inputs)
         #encoder part
         skip1, output1 = self.down1(inputs0)
@@ -244,7 +253,7 @@ class Basis_kpn(tf.keras.Model):
         Output7 = self.layer2_2(Output7_1)
         Coef = self.coef(Output7)
         Coef = tf.nn.softmax(Coef, axis=-1, name="Coef_softmax")
-        print("Coef.shape",tf.shape(Coef))
+        #print("Coef.shape",tf.shape(Coef))
         #basis branch
         Global_average_col = tf.reduce_mean(output6, axis=1, keepdims=True, name="Global_average_col")
         Global_average = tf.reduce_mean(Global_average_col, axis=2, keepdims=True, name="gloval_average")
@@ -265,24 +274,25 @@ class Basis_kpn(tf.keras.Model):
         
         
         ish = tf.shape(Basis)
+        originbasis = Basis
         #print("basis.shape",ish)
         Basis = tf.nn.softmax(tf.reshape(Basis,[ish[0],self.K**2*self.burst_length,self.B]),axis=1)
         Basis = tf.reshape(Basis,[ish[0],self.K,self.K,self.burst_length,self.B])
-        
+        Bas = Basis
         Coefficients = tf.expand_dims(tf.expand_dims(tf.expand_dims(Coef,3),3), 3)
         Coefficients = tf.tile(Coefficients,[1,1,1,self.K,self.K,self.burst_length,1])
         #print("Coefficients.shape",tf.shape(Coefficients))
         Basis = tf.expand_dims(tf.expand_dims(Basis,1),1)
-        Basis = tf.tile(Basis,[1,self.height,self.width,1,1,1,1])
+        Basis = tf.tile(Basis,[1,height,width,1,1,1,1])
         filts = tf.reduce_sum(Basis*Coefficients,axis=-1)
         #print("input.shape",tf.shape(inputs))
         #print("filts.shape",tf.shape(filts))
-        Deblur = tf.expand_dims(self.convolve(inputs, filts),-1)
+        Deblur = tf.expand_dims(self.convolve(Burst_images, filts),-1)
         #batch_size*H*W*1
-        Deblur_perburst = self.convolve_perlayer(inputs, filts)
+        Deblur_perburst = self.convolve_perlayer(Burst_images, filts)
         #batch_size*H*W*burst_length
         output = tf.concat([Deblur,Deblur_perburst], axis=-1)
-        return output 
+        return output,Bas
 
 
 
@@ -305,7 +315,12 @@ class Simplemodel(tf.keras.Model):
         #self.width = params['width']
         self.B=params['Basis_num']
         self.regu=params['regu']
-        self.layer0 = layers.Conv2D(64,3, padding="same", activation='relu',kernel_regularizer=regularizers.l2(self.regu),input_shape=(None, None, self.burst_length),name="weight0")
+        self.ps = params["ps"]
+        add_lengths={'singlestd' : 1,
+                     'dualparams' : 2,
+                     'empty' : 0}
+        add_length = add_lengths[params["layer_type"]]
+        self.layer0 = layers.Conv2D(64,3, padding="same", activation='relu',kernel_regularizer=regularizers.l2(self.regu),input_shape=(None, None, self.burst_length+add_length),name="weight0")
         self.down1 = Downblock(intermediate_dim=64, name='downblock1')
         self.down2 = Downblock(intermediate_dim=128, name='downblock2')
 # =============================================================================
@@ -355,6 +370,7 @@ class Simplemodel(tf.keras.Model):
         self.convolve = Convolve(self.K,name ="convolve")
         self.convolve_perlayer = Convolve_perlayer(self.K,self.burst_length, name ="convolve_perlayer")
     def call(self, inputs):
+        Burst_images = inputs[...,0:self.burst_length]
         height = tf.shape(inputs)[1]
         width = tf.shape(inputs)[2]
         inputs0 = self.layer0(inputs)
@@ -414,12 +430,12 @@ class Simplemodel(tf.keras.Model):
 #         print(tf.shape(Basis))
 #         print(tf.shape(Coef))
 # =============================================================================
-        
+        originbasis = Basis
         ish = tf.shape(Basis)
         #print("basis.shape",ish)
         Basis = tf.nn.softmax(tf.reshape(Basis,[ish[0],self.K**2*self.burst_length,self.B]),axis=1)
         Basis = tf.reshape(Basis,[ish[0],self.K,self.K,self.burst_length,self.B])
-        Basis_cost = Basis
+        Bas = Basis
         Coefficients = tf.expand_dims(tf.expand_dims(tf.expand_dims(Coef,3),3), 3)
         Coefficients = tf.tile(Coefficients,[1,1,1,self.K,self.K,self.burst_length,1])
         #print("Coefficients.shape",tf.shape(Coefficients))
@@ -428,12 +444,12 @@ class Simplemodel(tf.keras.Model):
         filts = tf.reduce_sum(Basis*Coefficients,axis=-1)
         #print("input.shape",tf.shape(inputs))
         #print("filts.shape",tf.shape(filts))
-        Deblur = tf.expand_dims(self.convolve(inputs, filts),-1)
+        Deblur = tf.expand_dims(self.convolve(Burst_images, filts),-1)
         #batch_size*H*W*1
-        Deblur_perburst = self.convolve_perlayer(inputs, filts)
+        Deblur_perburst = self.convolve_perlayer(Burst_images, filts)
         #batch_size*H*W*burst_length
         output = tf.concat([Deblur,Deblur_perburst], axis=-1)
-        return output 
+        return output,Bas,originbasis
 
 # =============================================================================
 # params = {
@@ -474,8 +490,3 @@ class Simplemodel(tf.keras.Model):
 #         plt.subplot(2,3,i+4)
 #         plt.imshow(invert[i,...])
 # =============================================================================
-
-
-
-
-    

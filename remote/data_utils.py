@@ -24,10 +24,10 @@ def getMemCpu():
 def sRGBforward(x):
     b = .0031308
     gamma = 1./2.4
-    a = .055
-    k0 = 12.92
-    #a = 1./(1./(b**gamma*(1.-gamma))-1.)
-    #k0 = (1+a)*gamma*b**(gamma-1.)
+    # a = .055
+    # k0 = 12.92
+    a = 1./(1./(b**gamma*(1.-gamma))-1.)
+    k0 = (1+a)*gamma*b**(gamma-1.)
     gammafn = lambda x : (1+a)*tf.pow(tf.maximum(x,b),gamma)-a
     # gammafn = lambda x : (1.-k0*b)/(1.-b)*(x-1.)+1.
     srgb = tf.where(x < b, k0*x, gammafn(x))
@@ -49,47 +49,34 @@ def basic_img_loss(img, truth):
     l1_grad = gradient_loss(img, truth)
     #print(l1_grad.numpy())
     return l2_pixel + l1_grad
-def deblur_layer_loss(y_pred,invert_gt, white_noise):
-    #batch = tf.shape(y_pred)[0]
+def deblur_layer_loss(y_true, y_pred,anneal_coef):
+    batch = tf.shape(y_pred)[0]
     burst_size = tf.shape(y_pred)[-1]-1
-# =============================================================================
-#     white_noise=tf.expand_dims(y_true[...,1],axis=-1)
-#     white_noise = tf.reduce_mean(tf.reduce_mean(white_noise,axis=1,keepdims=True),axis=2,keepdims=True)
-#     wlb = tf.reshape(white_noise, [batch, 1,1,1])
-#     gt = y_true[...,0] #tf.expand_dims(y_true[...,0],axis=-1)
-#     invert_gt = invert_preproc(gt,white_noise)#.numpy()
-#     Deblur = y_pred[...,0]#tf.expand_dims(y_pred[...,0],axis=-1)
-#     invert_deblur = invert_preproc(Deblur, white_noise)
-#     #print(tf.shape(invert_deblur))
-#     #print(tf.shape(invert_gt))
-#     loss0 = basic_img_loss(invert_deblur,invert_gt)
-# =============================================================================
+    white_noise=tf.expand_dims(y_true[...,1],axis=-1)
+    white_noise = tf.reduce_mean(tf.reduce_mean(white_noise,axis=1,keepdims=True),axis=2,keepdims=True)
+    wlb = tf.reshape(white_noise, [batch, 1,1,1])
+    gt = y_true[...,0] #tf.expand_dims(y_true[...,0],axis=-1)
+    invert_gt = invert_preproc(gt,white_noise)#.numpy()
+    Deblur = y_pred[...,0]#tf.expand_dims(y_pred[...,0],axis=-1)
+    invert_deblur = invert_preproc(Deblur, white_noise)
+    #print(tf.shape(invert_deblur))
+    #print(tf.shape(invert_gt))
+    loss0 = basic_img_loss(invert_deblur,invert_gt)
     invert_perlayer={}
-    invert_perlayer['da{}_noshow'.format(0)]=invert_preproc(y_pred[...,1],white_noise)
-    loss = basic_img_loss(invert_perlayer['da{}_noshow'.format(0)],invert_gt)
-    for i in range(burst_size-1):
-        invert_perlayer['da{}_noshow'.format(i+1)]=invert_preproc(y_pred[...,i+2],white_noise)
-        loss = loss + basic_img_loss(invert_perlayer['da{}_noshow'.format(i+1)],invert_gt)
-    return loss
-def invert_deblur_layer(y_pred,white_noise):
-    burst_size = tf.shape(y_pred)[-1]-1
-    invert_perlayers=[]
     for i in range(burst_size):
-        invert_perlayers.append(invert_preproc(y_pred[...,i+1],white_noise))
-    invert_perlayers = tf.concat(invert_perlayers,axis=-1)
-    return invert_perlayers
-def deblur_loss(invert_deblur, invert_gt):
-# =============================================================================
-#     batch = tf.shape(y_pred)[0]
-#     burst_size = tf.shape(y_pred)[-1]-1
-#     white_noise=tf.expand_dims(y_true[...,1],axis=-1)
-#     white_noise = tf.reduce_mean(tf.reduce_mean(white_noise,axis=1,keepdims=True),axis=2,keepdims=True)
-#     wlb = tf.reshape(white_noise, [batch, 1,1,1])
-#     gt = y_true[...,0] #tf.expand_dims(y_true[...,0],axis=-1)
-#     invert_gt = invert_preproc(gt,white_noise)#.numpy()
-#     Deblur = y_pred[...,0]#tf.expand_dims(y_pred[...,0],axis=-1)
-#     invert_deblur = invert_preproc(Deblur, white_noise)
-# =============================================================================
+        invert_perlayer['da{}_noshow'.format(i)]=invert_preproc(y_pred[...,i+1],white_noise)
+        loss0 = loss0 + anneal_coef * basic_img_loss(invert_perlayer['da{}_noshow'.format(i)],invert_gt) 
+    return loss0
+def deblur_loss(y_true, y_pred):
+    batch = tf.shape(y_pred)[0]
+    burst_size = tf.shape(y_pred)[-1]-1
+    white_noise=tf.expand_dims(y_true[...,1],axis=-1)
+    white_noise = tf.reduce_mean(tf.reduce_mean(white_noise,axis=1,keepdims=True),axis=2,keepdims=True)
+    wlb = tf.reshape(white_noise, [batch, 1,1,1])
+    gt = y_true[...,0] #tf.expand_dims(y_true[...,0],axis=-1)
+    invert_gt = invert_preproc(gt,white_noise)#.numpy()
+    Deblur = y_pred[...,0]#tf.expand_dims(y_pred[...,0],axis=-1)
+    invert_deblur = invert_preproc(Deblur, white_noise)
     #print(tf.shape(invert_deblur))
     #print(tf.shape(invert_gt))
     loss0 = basic_img_loss(invert_deblur,invert_gt)
@@ -107,10 +94,7 @@ def cost_volume(Basis):
     variance = tf.reduce_mean(cost)
     #loss1 = tf.math.reciprocal(variance, name=None)
     #loss2 = tf.math.exp(-variance, name=None)
-    sum_value = tf.maximum(tf.reduce_sum(tf.reshape(Basis,[ish[0],ish[1]**2,-1]),axis=1),0.75)
-    divergent = tf.reduce_mean(tf.square(sum_value-0.75))
-    
-    return -variance+0.1*divergent#loss1+loss2
+    return -variance#loss1+loss2
 def psnr_tf(estimate, truth):
   return -10. * tf.log(tf.reduce_mean(tf.square(estimate - truth))) / tf.math.log(10.)
 
@@ -136,11 +120,11 @@ def psnr_each_layer(invert_gt, white_noise, y_pred):
 #     gt = y_true[...,0] #tf.expand_dims(y_true[...,0],axis=-1)
 #     invert_gt = invert_preproc(gt,white_noise)#.numpy()
 # =============================================================================
-    perlayer={}
+    invert_perlayer={}
     psnr = {}
     for i in range(burst_size):
-        perlayer['da{}_noshow'.format(i)]=invert_preproc(y_pred[...,i+1],white_noise)
-        psnr['da{}_noshow'.format(i)] = psnr_tf_batch(perlayer['da{}_noshow'.format(i)],invert_gt)
+        invert_perlayer['da{}_noshow'.format(i)]=invert_preproc(y_pred[...,i+1],white_noise)
+        psnr['da{}_noshow'.format(i)] = psnr_tf_batch(invert_perlayer['da{}_noshow'.format(i)],invert_gt)
     return psnr
 def psnr_burst0(invert_gt, white_noise, x_batch_burst):
 # =============================================================================
@@ -213,12 +197,12 @@ class DataLoader():
         patches = self.make_first_truth((tf.cast(image, tf.float32) / 255.)**degamma,\
                                                  height, width, BURST_LENGTH, to_shift, upscale, jitter)
         print("patches size",tf.shape(patches))
-        
+        #PATCHES ================= [1, 256, 256, 3]
         demosaic_truth = self.make_truth_hqjitter(patches, BURST_LENGTH, height, width, to_shift, upscale, jitter, smalljitter)
         print("demosaic_truth size",tf.shape(demosaic_truth))
 
         demosaic_truth = tf.reduce_mean(demosaic_truth, axis=-2)
-        #shape h*w*burst_length
+            
         truth_all = demosaic_truth
 
         degamma = 1.
@@ -231,18 +215,12 @@ class DataLoader():
         
         sig_read = tf.pow(10., tf.compat.v1.random_uniform([1, 1, 1], -3., -1.5))
         sig_shot = tf.pow(10., tf.compat.v1.random_uniform([1, 1, 1], -2., -1.))
-        #sig_read = tf.tile(sig_read,[height,width,1])
-        #sig_shot = tf.tile(sig_shot,[height,width,1])
-# =============================================================================
-#         print(sig_read.numpy())
-#         print(sig_shot.numpy())
-# =============================================================================
         dec = demosaic_truth
         #dec = self.decimatergb(demosaic_truth, BURST_LENGTH) if self.color else demosaic_truth
 #        print 'DEC',dec.get_shape().as_list()
         noisy_, _ = self.add_read_shot_tf(dec, sig_read, sig_shot)
         noisy = noisy_
-        
+
         first2 = demosaic_truth[...,:2]
         #demosaic_truth = demosaic_truth[...,0,:] if self.color else demosaic_truth[...,0]
         demosaic_truth = demosaic_truth[...,0]
@@ -250,19 +228,7 @@ class DataLoader():
         demosaic_truth = tf.expand_dims(demosaic_truth,-1)
         #print(tf.shape(demosaic_truth))
         white_level = tf.tile(white_level,[height,width,1])
-        sig_read = tf.tile(sig_read, [tf.shape(noisy)[0], tf.shape(noisy)[1], 1])
-        sig_shot = tf.tile(sig_shot, [tf.shape(noisy)[0], tf.shape(noisy)[1], 1])
-        sig_tower = tf.concat([sig_shot, sig_read], axis=-1)
-        sig_read_single_std = tf.sqrt(sig_read**2 + tf.maximum(0., noisy[...,0:1]) * sig_shot**2)
-        sig_read_dual_params = tf.concat([sig_read, sig_shot], axis=-1)
-        sig_read_empty = tf.zeros_like(noisy[...,0:0])
-        sig_reads = {
-                'singlestd' : sig_read_single_std,
-                'dualparams' : sig_read_dual_params,
-                'empty' : sig_read_empty
-                }
-        sig_read = sig_reads[params["layer_type"]]
-        return tf.concat([noisy,sig_read],axis=-1),tf.concat([demosaic_truth,white_level],axis=-1)
+        return noisy,tf.concat([demosaic_truth,white_level],axis=-1)
     
 
     def load_and_preprocess_image(self,image,params):
@@ -351,22 +317,6 @@ class DataLoader():
 # =============================================================================
 
     def get_ds(self):
-        current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        path_ds = tf.data.Dataset.from_tensor_slices(self.all_img_paths)
-        image_ds = path_ds.map(lambda x: self.load_image(x,self.params)).map(lambda x:self.preprocess_image(x, self.params)).cache(filename='traindataset'+current_time)
-        image_ds = image_ds.shuffle(self.count).repeat() #.
-        image_ds = image_ds.batch(self.batch_size,drop_remainder=True)
-        image_ds = image_ds.prefetch(buffer_size=AUTOTUNE)
-# =============================================================================
-#         dset = tf.data.TFRecordDataset(train_tfrecords, compression_type='', buffer_size=buffer_mb<<20)
-#         dset = dset.repeat()
-#         buf_size = 1000
-#         dset = dset.prefetch(buf_size)
-#         dset = dset.map(parse_tfrecord_tf, num_parallel_calls=num_threads)
-#         dset = dset.shuffle(buffer_size=buf_size)
-#         dset = dset.map(lambda x: random_crop_noised_clean(x, add_noise))
-#         dset = dset.batch(minibatch_size)
-# =============================================================================
 # =============================================================================
 #         current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 #         path_ds = tf.data.Dataset.from_tensor_slices(self.all_img_paths)
@@ -375,20 +325,26 @@ class DataLoader():
 #         image_ds = image_ds.batch(self.batch_size,drop_remainder=True)
 #         image_ds = image_ds.prefetch(buffer_size=AUTOTUNE)
 # =============================================================================
+        current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        path_ds = tf.data.Dataset.from_tensor_slices(self.all_img_paths).shuffle(self.count)
+        image_ds = path_ds.map(lambda x: self.load_image(x,self.params), num_parallel_calls=tf.data.experimental.AUTOTUNE)#.cache(filename='traindataset'+current_time)
+        image_ds = image_ds.map(lambda x:self.preprocess_image(x, self.params)).repeat() 
+        image_ds = image_ds.batch(self.batch_size,drop_remainder=True)
+        image_ds = image_ds.prefetch(buffer_size=AUTOTUNE)
+        return image_ds
+    def get_val_ds(self):
 # =============================================================================
 #         current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-#         path_ds = tf.data.Dataset.from_tensor_slices(self.all_img_paths).shuffle(self.count)
-#         image_ds = path_ds.map(lambda x: self.load_image(x,self.params), num_parallel_calls=tf.data.experimental.AUTOTUNE)#.cache(filename='traindataset'+current_time)
-#         image_ds = image_ds.map(lambda x:self.preprocess_image(x, self.params)).repeat() 
+#         val_path_ds = tf.data.Dataset.from_tensor_slices(self.val_all_img_paths)
+#         image_ds = val_path_ds.map(lambda x: self.load_image(x,self.params)).cache(filename='valdataset'+current_time)
+#         image_ds = image_ds.shuffle(self.val_count).map(lambda x:self.preprocess_image(x, self.params))#.repeat() #
 #         image_ds = image_ds.batch(self.batch_size,drop_remainder=True)
 #         image_ds = image_ds.prefetch(buffer_size=AUTOTUNE)
 # =============================================================================
-        return image_ds
-    def get_val_ds(self):
         current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        val_path_ds = tf.data.Dataset.from_tensor_slices(self.val_all_img_paths)
-        image_ds = val_path_ds.map(lambda x: self.load_image(x,self.params)).cache(filename='valdataset'+current_time)
-        image_ds = image_ds.shuffle(self.val_count).map(lambda x:self.preprocess_image(x, self.params))#.repeat() #
+        val_path_ds = tf.data.Dataset.from_tensor_slices(self.val_all_img_paths).shuffle(self.val_count)
+        image_ds = val_path_ds.map(lambda x: self.load_image(x,self.params), num_parallel_calls=tf.data.experimental.AUTOTUNE)#.cache(filename='traindataset'+current_time)
+        image_ds = image_ds.map(lambda x:self.preprocess_image(x, self.params))#.repeat() 
         image_ds = image_ds.batch(self.batch_size,drop_remainder=True)
         image_ds = image_ds.prefetch(buffer_size=AUTOTUNE)
         #suggest

@@ -47,8 +47,8 @@ def parse_args():
 def main():
     args = parse_args()
 
-    np.random.seed(0)
-    tf.random.set_seed(0)
+    np.random.seed(1234)
+    tf.random.set_seed(1234)
 
     #tf.logging.set_verbosity(tf.logging.INFO)
     params = {
@@ -75,12 +75,11 @@ def main():
     current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     #log_dir = '.\\logs\\gradient_tape\\' + current_time + '\\train'
     log_dir = '.\\logs\\gradient_tape\\' + '20200523-220530' + '\\train'
-    anneal = params["anneal"]
     summary_writer = tf.summary.create_file_writer(log_dir)
     model=Simplemodel(params)    
     train_image_ds = DataLoader(params).get_ds()
     val_image_ds = DataLoader(params).get_val_ds()
-    
+    anneal = params["anneal"]
     epochs = params["nepochs"]
 # =============================================================================
 #     STEPS_PER_EPOCH = N_TRAIN//BATCH_SIZE
@@ -115,7 +114,7 @@ def main():
 #     model.fit(image_ds, epochs=params["nepochs"],\
 #               callbacks=[TensorBoardcallback])
 # =============================================================================
-    # Iterate over epochs.
+    # Iterate over optimization steps.
     
     for epoch in range(epochs):
         start = time.clock()
@@ -161,8 +160,7 @@ def main():
             #print(len(model.trainable_weights))
             #model.summury()
             loss_metric(loss)
-            if step % 4==0:
-                ckpt.iterate.assign_add(1)
+            
             if step % 100 == 0:
                 print('ckpt.iterate=%d with anneal_coef=%f'%(ckpt.iterate.numpy(),anneal_coef.numpy()))
                 print('step %s: mean loss = %s' % (step, loss_metric.result()))
@@ -170,6 +168,8 @@ def main():
                 print('step %s: psnrnoshow0 = %s' % (step, np.mean(psnr_perlayer[0])))
                 print('step %s: psnrburst0 = %s' % (step, np.mean(psnr_noise0)))
                 print('step %s: psnraverage = %s' % (step, np.mean(psnr_average)))
+            if step % 4==0:
+                ckpt.iterate.assign_add(1)
         if int(ckpt.step) % 2 == 0:
             save_path = manager.save()
             print("Saved checkpoint for step {}: {}".format(int(ckpt.step), save_path))
